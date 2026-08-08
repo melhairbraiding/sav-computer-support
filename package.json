@@ -1,0 +1,9 @@
+{
+  "name": "sav-computer-support",
+  "private": true,
+  "version": "1.0.0",
+  "description": "SAV Computer Support website — static site + Netlify Function (Blobs) for shared data",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}
