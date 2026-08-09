@@ -7,6 +7,20 @@
 
 const { getStore } = require("@netlify/blobs");
 
+// Netlify's automatic Blobs configuration inside functions is unreliable on some
+// deploys (a known Netlify platform issue: MissingBlobsEnvironmentError even when
+// everything is set up correctly). To work around it, we fall back to explicit
+// credentials — BLOBS_SITE_ID and BLOBS_API_TOKEN — set as environment variables
+// in Netlify's site settings. If those aren't set, we try auto-config as normal.
+function getBlobStore() {
+  const siteID = process.env.BLOBS_SITE_ID;
+  const token = process.env.BLOBS_API_TOKEN;
+  if (siteID && token) {
+    return getStore({ name: "sav-site-data", siteID, token });
+  }
+  return getStore("sav-site-data");
+}
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -19,7 +33,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const store = getStore("sav-site-data");
+    const store = getBlobStore();
 
     if (event.httpMethod === "GET") {
       const params = event.queryStringParameters || {};
