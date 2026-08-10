@@ -11,6 +11,7 @@
     --ink:#0D1922; --panel:#132532; --panel-2:#17303F;
     --line: rgba(127,209,224,0.14); --line-strong: rgba(127,209,224,0.30);
     --cyan:#7FD1E0; --amber:#F2A63D; --amber-dim: rgba(242,166,61,0.16);
+    --yellow:#E8D44D;
     --paper:#EBEEEA; --slate:#8CA0B0; --good:#6FCF97; --danger:#E88B7D; --radius:2px;
   }
   *{box-sizing:border-box;}
@@ -453,6 +454,7 @@
           <p style="color:var(--slate);font-size:13.5px;max-width:520px;margin:0;">Every submitted ticket, across all visitors and devices. This is a convenience log — Formspree email is still the reliable record if it's configured.</p>
           <button class="cta-ghost" onclick="renderAdminBookingsList()">Refresh</button>
         </div>
+        <div id="adminBookingsStats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:22px;"></div>
         <div id="adminBookingsList"></div>
       </div>
 
@@ -463,6 +465,21 @@
         <div class="field" style="max-width:420px;"><label>Formspree endpoint</label><input id="cfgFormspree" type="text" placeholder="https://formspree.io/f/xxxxxxxx"></div>
         <button class="cta-btn" onclick="saveFormspree()">Save endpoint</button>
         <div class="save-msg" id="formspreeSaveMsg">Saved.</div>
+
+        <div class="divider-label">EmailJS (direct customer status alerts)</div>
+        <p style="color:var(--slate);font-size:13.5px;max-width:500px;">
+          This sends the actual "your ticket status changed" email straight to the customer — separate from Formspree above, and free.
+          Create a free account at <a href="https://www.emailjs.com" target="_blank" rel="noopener">emailjs.com</a>, connect an email service (e.g. Gmail), and create a template with a subject/body using variables
+          <span class="mono">{{to_name}}</span>, <span class="mono">{{ticket}}</span>, <span class="mono">{{status}}</span>, <span class="mono">{{note}}</span>, <span class="mono">{{category}}</span>, <span class="mono">{{issue}}</span>, <span class="mono">{{business_name}}</span>.
+          In the template's "To Email" field, use <span class="mono">{{to_email}}</span>. Then paste the three IDs below (all found in your EmailJS dashboard).
+        </p>
+        <div class="field-row" style="max-width:640px;">
+          <div class="field"><label>Service ID</label><input id="cfgEmailjsService" type="text" placeholder="service_xxxxxxx"></div>
+          <div class="field"><label>Template ID</label><input id="cfgEmailjsTemplate" type="text" placeholder="template_xxxxxxx"></div>
+        </div>
+        <div class="field" style="max-width:420px;"><label>Public key</label><input id="cfgEmailjsKey" type="text" placeholder="Your EmailJS public key"></div>
+        <button class="cta-btn" onclick="saveEmailjs()">Save EmailJS settings</button>
+        <div class="save-msg" id="emailjsSaveMsg">Saved.</div>
 
         <div class="divider-label">Admin password</div>
         <div class="field-row" style="max-width:420px;">
@@ -579,6 +596,9 @@ const DEFAULT_SITE_CONFIG = {
   logoImage: '',
   logoSvg: '',
   formspreeEndpoint: '',
+  emailjsServiceId: '',
+  emailjsTemplateId: '',
+  emailjsPublicKey: '',
   adminPassword: 'admin123'
 };
 
@@ -819,6 +839,44 @@ async function postToFormspree(payload){
   }
 }
 
+/* ---------------- EMAILJS (direct customer status-update alerts) ----------------
+   Free tier, sends straight to the customer's email — separate from Formspree,
+   which is still used for bookings/contact so nothing about that flow changes. */
+async function postToEmailJS(templateParams){
+  const { emailjsServiceId, emailjsTemplateId, emailjsPublicKey } = SITE_CONFIG;
+  if(!emailjsServiceId || !emailjsTemplateId || !emailjsPublicKey){
+    return { sent:false, reason:'not-configured' };
+  }
+  try{
+    const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        service_id: emailjsServiceId,
+        template_id: emailjsTemplateId,
+        user_id: emailjsPublicKey,
+        template_params: templateParams
+      })
+    });
+    return { sent: res.ok, reason: res.ok ? 'ok' : 'http-'+res.status };
+  }catch(e){
+    return { sent:false, reason:'network-error' };
+  }
+}
+
+async function sendStatusEmail(rec, newStatus, comment){
+  await postToEmailJS({
+    to_email: rec.email,
+    to_name: rec.name,
+    ticket: rec.ticket,
+    status: newStatus,
+    note: comment || '(no additional note)',
+    category: rec.category,
+    issue: rec.issue,
+    business_name: SITE_CONFIG.businessName
+  });
+}
+
 /* ---------------- SUBMIT + STORAGE ---------------- */
 async function nextTicketNumber(){
   const year = new Date().getFullYear();
@@ -849,8 +907,8 @@ async function submitBooking(){
   const record = {
     ticket, category: cat ? cat.name : 'Other', issue: booking.issue, price: booking.issuePrice,
     mode: booking.mode, name, phone, email, date, notes, createdAt: now,
-    status: 'Pending',
-    history: [{ status:'Pending', comment:'Ticket created', at: now }],
+    status: 'Open',
+    history: [{ status:'Open', comment:'Ticket created', at: now }],
     feedback: null
   };
 
@@ -899,14 +957,19 @@ function resetBooking(){
 }
 
 /* ---------------- STATUS HELPERS ---------------- */
-const STATUS_OPTIONS = ['Pending','In Progress','On Hold','Complete'];
+const STATUS_OPTIONS = ['Open','Pending','In Progress','On Hold','Complete','Cancelled-Closed'];
 function statusColorVar(status){
   switch(status){
-    case 'In Progress': return 'var(--cyan)';
-    case 'On Hold': return 'var(--amber)';
-    case 'Complete': return 'var(--good)';
+    case 'Open': return 'var(--yellow)';
+    case 'Pending': case 'In Progress': case 'On Hold': return 'var(--amber)';
+    case 'Complete': case 'Cancelled-Closed': return 'var(--good)';
     default: return 'var(--slate)';
   }
+}
+function statusBucket(status){
+  if(status === 'Open') return 'open';
+  if(status === 'Complete' || status === 'Cancelled-Closed') return 'closed';
+  return 'active'; // Pending, In Progress, On Hold
 }
 function statusBadge(status){
   const c = statusColorVar(status);
@@ -1087,6 +1150,9 @@ function populateAdminForms(){
   document.getElementById('cfgLogoImage').value = SITE_CONFIG.logoImage;
   document.getElementById('cfgLogoSvg').value = SITE_CONFIG.logoSvg;
   document.getElementById('cfgFormspree').value = SITE_CONFIG.formspreeEndpoint;
+  document.getElementById('cfgEmailjsService').value = SITE_CONFIG.emailjsServiceId;
+  document.getElementById('cfgEmailjsTemplate').value = SITE_CONFIG.emailjsTemplateId;
+  document.getElementById('cfgEmailjsKey').value = SITE_CONFIG.emailjsPublicKey;
   toggleLogoFields();
   renderAdminCatList();
   renderAdminGalleryList();
@@ -1105,6 +1171,8 @@ async function renderAdminBookingsList(){
   if(!keys.length){
     el.innerHTML = '<p style="color:var(--slate);font-size:13.5px;">No tickets yet.</p>';
     adminBookingRecords = [];
+    const statsEl = document.getElementById('adminBookingsStats');
+    if(statsEl) statsEl.innerHTML = '';
     return;
   }
   const records = [];
@@ -1113,13 +1181,33 @@ async function renderAdminBookingsList(){
   }
   records.sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
   adminBookingRecords = records;
+  renderAdminBookingsStats(records);
   el.innerHTML = records.map(r=>renderAdminTicketRow(r)).join('');
 }
 
+function renderAdminBookingsStats(records){
+  const el = document.getElementById('adminBookingsStats');
+  if(!el) return;
+  if(!records.length){ el.innerHTML = ''; return; }
+  const counts = { open:0, active:0, closed:0 };
+  records.forEach(r=>{ counts[statusBucket(r.status || 'Open')]++; });
+  const chip = (label, n, colorVar, bg) => `
+    <div style="border:1px solid ${colorVar};background:${bg};padding:10px 18px;border-radius:2px;min-width:110px;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:22px;color:${colorVar};font-weight:600;">${n}</div>
+      <div style="font-size:11.5px;color:var(--slate);text-transform:uppercase;letter-spacing:.05em;margin-top:2px;">${label}</div>
+    </div>`;
+  el.innerHTML =
+    chip('Open', counts.open, 'var(--yellow)', 'rgba(232,212,77,0.08)') +
+    chip('Pending / On Hold / In Progress', counts.active, 'var(--amber)', 'var(--amber-dim)') +
+    chip('Complete / Cancelled-Closed', counts.closed, 'var(--good)', 'rgba(111,207,151,0.08)') +
+    chip('Total', records.length, 'var(--paper)', 'var(--panel-2)');
+}
+
 function renderAdminTicketRow(r){
-  const status = r.status || 'Pending';
+  const status = r.status || 'Open';
   const isOpen = expandedAdminTicket === r.ticket;
   const history = (r.history || []).slice().reverse();
+  const isLocked = (status === 'Complete' || status === 'Cancelled-Closed');
   return `
     <div class="admin-cat-row" style="flex-direction:column;align-items:stretch;cursor:pointer;" onclick="toggleAdminTicketDetail('${r.ticket}')">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
@@ -1134,20 +1222,27 @@ function renderAdminTicketRow(r){
       </div>
       ${isOpen ? `
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line-strong);" onclick="event.stopPropagation();">
-          <div class="field-row">
-            <div class="field">
-              <label>Update status</label>
-              <select id="status-select-${r.ticket}">
-                ${STATUS_OPTIONS.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s}</option>`).join('')}
-              </select>
+          ${isLocked ? `
+            <div style="border:1px solid var(--good);background:rgba(111,207,151,0.08);color:var(--good);font-size:13px;padding:10px 14px;border-radius:2px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+              <span>✓ This ticket is ${status === 'Cancelled-Closed' ? 'cancelled/closed' : 'complete'}${r.cancelReason ? ' — reason: '+r.cancelReason : ''}. Status updates are locked to prevent accidental changes.</span>
+              <button class="cta-ghost" style="padding:6px 12px;font-size:12.5px;" onclick="reopenTicket('${r.ticket}')">Reopen ticket</button>
             </div>
-            <div class="field">
-              <label>Note (optional, visible to customer)</label>
-              <input type="text" id="status-comment-${r.ticket}" placeholder="e.g. Waiting on replacement screen">
+          ` : `
+            <div class="field-row">
+              <div class="field">
+                <label>Update status</label>
+                <select id="status-select-${r.ticket}" onchange="toggleCancelReasonField('${r.ticket}')">
+                  ${STATUS_OPTIONS.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field">
+                <label id="note-label-${r.ticket}">Note (optional, visible to customer)</label>
+                <input type="text" id="status-comment-${r.ticket}" placeholder="e.g. Waiting on replacement screen">
+              </div>
             </div>
-          </div>
-          <button class="cta-btn" onclick="updateTicketStatus('${r.ticket}')">Save update</button>
-          <div class="save-msg" id="statusSaveMsg-${r.ticket}">Saved.</div>
+            <button class="cta-btn" onclick="updateTicketStatus('${r.ticket}')">Save update</button>
+            <div class="save-msg" id="statusSaveMsg-${r.ticket}">Saved.</div>
+          `}
 
           <div class="divider-label">Contact &amp; details</div>
           <div style="font-size:13.5px;color:var(--paper);line-height:1.8;">
@@ -1184,18 +1279,61 @@ function toggleAdminTicketDetail(ticket){
 async function updateTicketStatus(ticket){
   const newStatus = document.getElementById('status-select-'+ticket).value;
   const comment = document.getElementById('status-comment-'+ticket).value.trim();
+
+  if(newStatus === 'Cancelled-Closed' && !comment){
+    alert('Please provide a cancellation reason in the note field before saving.');
+    return;
+  }
+
+  let rec = null;
   try{
     const live = await sharedGet('ticket-log:'+ticket);
-    const rec = live && live.value ? JSON.parse(live.value) : null;
+    rec = live && live.value ? JSON.parse(live.value) : null;
     if(!rec){ alert('Could not load this ticket — please refresh.'); return; }
     rec.status = newStatus;
     rec.history = rec.history || [];
     rec.history.push({ status:newStatus, comment, at: new Date().toISOString() });
+    if(newStatus === 'Cancelled-Closed') rec.cancelReason = comment;
     await sharedSet('ticket-log:'+ticket, JSON.stringify(rec));
-    // keep the customer's personal copy's status in sync too, best-effort (only affects this browser)
   }catch(e){ console.error(e); alert('Failed to save the update — please try again.'); return; }
+
+  // Alert the customer directly by email via EmailJS (separate from the Formspree
+  // pipeline used for bookings/contact — this one emails the customer, not just the business).
+  if(rec.email){
+    sendStatusEmail(rec, newStatus, comment);
+  }
+
   await renderAdminBookingsList();
-  flashSaved('statusSaveMsg-'+ticket);
+  const isLockedStatus = (newStatus === 'Complete' || newStatus === 'Cancelled-Closed');
+  if(!isLockedStatus) flashSaved('statusSaveMsg-'+ticket);
+}
+
+function toggleCancelReasonField(ticket){
+  const sel = document.getElementById('status-select-'+ticket);
+  const label = document.getElementById('note-label-'+ticket);
+  const input = document.getElementById('status-comment-'+ticket);
+  if(!sel || !label || !input) return;
+  if(sel.value === 'Cancelled-Closed'){
+    label.textContent = 'Cancellation reason (required)';
+    input.placeholder = "Why couldn't this be resolved?";
+  } else {
+    label.textContent = 'Note (optional, visible to customer)';
+    input.placeholder = 'e.g. Waiting on replacement screen';
+  }
+}
+
+async function reopenTicket(ticket){
+  if(!confirm('Reopen this ticket for editing?')) return;
+  try{
+    const live = await sharedGet('ticket-log:'+ticket);
+    const rec = live && live.value ? JSON.parse(live.value) : null;
+    if(!rec) return;
+    rec.status = 'In Progress';
+    rec.history = rec.history || [];
+    rec.history.push({ status:'In Progress', comment:'Reopened by admin', at: new Date().toISOString() });
+    await sharedSet('ticket-log:'+ticket, JSON.stringify(rec));
+  }catch(e){ console.error(e); }
+  renderAdminBookingsList();
 }
 
 async function deleteAdminBooking(ticket){
@@ -1226,6 +1364,14 @@ async function saveFormspree(){
   SITE_CONFIG.formspreeEndpoint = document.getElementById('cfgFormspree').value.trim();
   await persistSiteConfig();
   flashSaved('formspreeSaveMsg');
+}
+
+async function saveEmailjs(){
+  SITE_CONFIG.emailjsServiceId = document.getElementById('cfgEmailjsService').value.trim();
+  SITE_CONFIG.emailjsTemplateId = document.getElementById('cfgEmailjsTemplate').value.trim();
+  SITE_CONFIG.emailjsPublicKey = document.getElementById('cfgEmailjsKey').value.trim();
+  await persistSiteConfig();
+  flashSaved('emailjsSaveMsg');
 }
 
 async function changeAdminPassword(){
