@@ -326,9 +326,12 @@
 
       <div class="card" style="margin-bottom:32px;max-width:520px;">
         <h3 style="font-size:15px;">Look up a ticket</h3>
-        <p style="color:var(--slate);font-size:13.5px;margin:0 0 14px;">Booked from a different device? Enter your ticket number to check its status from anywhere.</p>
+        <p style="color:var(--slate);font-size:13.5px;margin:0 0 14px;">Booked from a different device? Enter your ticket number and the phone number used when booking to check its status.</p>
+        <div class="field" style="margin-bottom:10px;">
+          <input type="text" id="lookupTicketInput" placeholder="Ticket number" style="width:100%;background:var(--panel-2);border:1px solid var(--line-strong);color:var(--paper);padding:11px 12px;border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:14px;text-transform:uppercase;">
+        </div>
         <div style="display:flex;gap:10px;">
-          <input type="text" id="lookupTicketInput" placeholder="SAV-2026-1001" style="flex:1;background:var(--panel-2);border:1px solid var(--line-strong);color:var(--paper);padding:11px 12px;border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:14px;text-transform:uppercase;">
+          <input type="tel" id="lookupPhoneInput" placeholder="Phone number used for booking" style="flex:1;background:var(--panel-2);border:1px solid var(--line-strong);color:var(--paper);padding:11px 12px;border-radius:2px;font-family:inherit;font-size:14px;">
           <button class="cta-btn" onclick="lookupTicket()">Look up</button>
         </div>
         <div id="lookupResult" style="margin-top:16px;"></div>
@@ -995,25 +998,35 @@ function esc(str){
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-/* ---------------- TICKET LOOKUP (any device) ---------------- */
+/* ---------------- TICKET LOOKUP (any device, two-factor: ticket + phone) ---------------- */
 async function lookupTicket(){
   const raw = document.getElementById('lookupTicketInput').value.trim().toUpperCase();
+  const phone = document.getElementById('lookupPhoneInput').value.trim();
   const resultEl = document.getElementById('lookupResult');
-  if(!raw){ resultEl.innerHTML = `<p style="color:var(--slate);font-size:13.5px;">Enter a ticket number first.</p>`; return; }
-
-  resultEl.innerHTML = `<p style="color:var(--slate);font-size:13.5px;">Looking up ${raw}…</p>`;
-  let rec = null;
-  try{
-    const live = await sharedGet('ticket-log:'+raw);
-    if(live && live.value) rec = JSON.parse(live.value);
-  }catch(e){ /* not found */ }
-
-  if(!rec){
-    resultEl.innerHTML = `<p style="color:var(--danger);font-size:13.5px;">No ticket found matching "${raw}". Double check the number (e.g. SAV-2026-1001) and try again.</p>`;
+  if(!raw || !phone){
+    resultEl.innerHTML = `<p style="color:var(--slate);font-size:13.5px;">Enter both your ticket number and phone number.</p>`;
     return;
   }
 
-  const status = rec.status || 'Pending';
+  resultEl.innerHTML = `<p style="color:var(--slate);font-size:13.5px;">Looking up…</p>`;
+  let rec = null;
+  try{
+    const res = await fetch('/.netlify/functions/data', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'lookup', ticket: raw, phone })
+    });
+    if(res.ok){
+      const data = await res.json();
+      if(data && data.value) rec = JSON.parse(data.value);
+    }
+  }catch(e){ /* not found */ }
+
+  if(!rec){
+    resultEl.innerHTML = `<p style="color:var(--danger);font-size:13.5px;">No matching ticket found. Double check the ticket number and the phone number used when booking.</p>`;
+    return;
+  }
+
+  const status = rec.status || 'Open';
   const lastNote = (rec.history && rec.history.length) ? rec.history[rec.history.length-1] : null;
   const feedbackBlock = status === 'Complete'
     ? (rec.feedback
@@ -1024,14 +1037,17 @@ async function lookupTicket(){
   resultEl.innerHTML = `
     <div class="booking-row" style="flex-direction:column;align-items:stretch;">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;width:100%;">
-        <div><div class="t">${rec.ticket}</div><div class="meta">${esc(rec.category)} · ${esc(rec.issue)} · ${esc(rec.price)||''}</div></div>
-        <div style="text-align:right;">${statusBadge(status)}<div class="meta" style="margin-top:6px;">${rec.mode} · ${rec.date || 'Flexible'}</div></div>
+        <div><div class="t">${esc(rec.ticket)}</div><div class="meta">${esc(rec.category)} · ${esc(rec.issue)} · ${esc(rec.price)||''}</div></div>
+        <div style="text-align:right;">${statusBadge(status)}<div class="meta" style="margin-top:6px;">${esc(rec.mode)} · ${esc(rec.date) || 'Flexible'}</div></div>
       </div>
       ${lastNote ? `<div style="margin-top:10px;font-size:13px;color:var(--slate);">Latest update (${fmtDate(lastNote.at)}): ${lastNote.comment ? esc(lastNote.comment) : statusBadge(lastNote.status)}</div>` : ''}
       ${feedbackBlock}
     </div>`;
 }
 document.getElementById('lookupTicketInput').addEventListener('keydown', e=>{
+  if(e.key === 'Enter') lookupTicket();
+});
+document.getElementById('lookupPhoneInput').addEventListener('keydown', e=>{
   if(e.key === 'Enter') lookupTicket();
 });
 async function renderBookings(){

@@ -120,6 +120,33 @@ exports.handler = async (event) => {
         return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ ok: false, error: "wrong password" }) };
       }
 
+      if (body.action === "lookup") {
+        // Two-factor ticket lookup: must supply BOTH the ticket number and the
+        // phone number on file for it. On any mismatch — wrong phone, or the
+        // ticket simply doesn't exist — we return the exact same generic 404,
+        // so someone can't use this to enumerate which ticket numbers are real.
+        const genericNotFound = { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: "not found" }) };
+        if (!body.ticket || !body.phone) {
+          return genericNotFound;
+        }
+        const key = "ticket-log:" + String(body.ticket).trim().toUpperCase();
+        const existing = await store.get(key);
+        if (existing === null) return genericNotFound;
+
+        try {
+          const record = JSON.parse(existing);
+          const digitsOnly = (s) => String(s || "").replace(/\D/g, "");
+          const suppliedPhone = digitsOnly(body.phone);
+          const storedPhone = digitsOnly(record.phone);
+          if (!suppliedPhone || suppliedPhone !== storedPhone) {
+            return genericNotFound;
+          }
+          return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ value: JSON.stringify(stripTicketPII(record)) }) };
+        } catch (e) {
+          return genericNotFound;
+        }
+      }
+
       if (body.action === "set") {
         if (!body.key) {
           return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: "key required" }) };
