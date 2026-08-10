@@ -246,8 +246,8 @@
       <div class="grid-4" id="homeCategoryPreview"></div>
     </section>
 
-    <section class="block">
-      <div class="section-head"><h2>Recent work</h2><p>Photos added from the admin panel.</p></div>
+    <section class="block" id="galleryBlock">
+      <div class="section-head"><h2>Recent work</h2></div>
       <div id="gallerySection"></div>
     </section>
 
@@ -754,12 +754,15 @@ function renderServicesPage(){
 
 function renderGallerySection(){
   const el = document.getElementById('gallerySection');
+  const block = document.getElementById('galleryBlock');
   if(!GALLERY.length){
-    el.innerHTML = `<div class="empty-state">No photos yet — add some from the <a href="#" onclick="showPage('admin');return false;">admin panel</a>.</div>`;
+    if(block) block.style.display = 'none';
+    el.innerHTML = '';
     return;
   }
+  if(block) block.style.display = '';
   el.innerHTML = `<div class="gallery-grid">` + GALLERY.map(g=>`
-    <div><img src="${g.url}" alt="${g.caption||''}" loading="lazy"><div class="gallery-cap">${g.caption||''}</div></div>`).join('') + `</div>`;
+    <div><img src="${esc(g.url)}" alt="${esc(g.caption||'')}" loading="lazy"><div class="gallery-cap">${esc(g.caption||'')}</div></div>`).join('') + `</div>`;
 }
 
 /* ---------------- BOOKING FLOW STATE ---------------- */
@@ -933,26 +936,23 @@ async function submitBooking(){
 }
 
 function renderTicketCard(r, emailResult){
-  const notifyLine = emailResult.sent
-    ? `<p style="color:var(--good);font-size:13px;margin-top:14px;">✓ The business has been notified by email.</p>`
-    : `<p style="color:var(--slate);font-size:13px;margin-top:14px;">Email notifications aren't configured yet — we'll still follow up by phone/WhatsApp.</p>`;
   document.getElementById('ticketCard').innerHTML = `
     <div class="stamp">RECEIVED</div>
     <div class="tnum">TICKET // ${r.ticket}</div>
     <h3>Service request confirmed</h3>
     <dl>
-      <dt>Device</dt><dd>${r.category}</dd>
-      <dt>Issue</dt><dd>${r.issue}</dd>
-      <dt>Estimate</dt><dd>${r.price || '—'}</dd>
-      <dt>Status</dt><dd>${statusBadge(r.status || 'Pending')}</dd>
-      <dt>Mode</dt><dd>${r.mode}</dd>
+      <dt>Device</dt><dd>${esc(r.category)}</dd>
+      <dt>Issue</dt><dd>${esc(r.issue)}</dd>
+      <dt>Estimate</dt><dd>${esc(r.price) || '—'}</dd>
+      <dt>Status</dt><dd>${statusBadge(r.status || 'Open')}</dd>
+      <dt>Mode</dt><dd>${esc(r.mode)}</dd>
       <dt>Name</dt><dd>${esc(r.name)}</dd>
       <dt>Phone</dt><dd>${esc(r.phone)}</dd>
-      <dt>Email</dt><dd>${r.email || '—'}</dd>
-      <dt>Preferred date</dt><dd>${r.date || 'Flexible'}</dd>
-      <dt>Notes</dt><dd>${r.notes || '—'}</dd>
+      <dt>Email</dt><dd>${esc(r.email) || '—'}</dd>
+      <dt>Preferred date</dt><dd>${esc(r.date) || 'Flexible'}</dd>
+      <dt>Notes</dt><dd>${esc(r.notes) || '—'}</dd>
     </dl>
-    ${notifyLine}
+    <p style="color:var(--slate);font-size:13px;margin-top:14px;">We'll follow up to confirm details.</p>
   `;
 }
 
@@ -1130,7 +1130,9 @@ async function sendContactMessage(){
   const result = await postToFormspree({ formType:'Contact message', name, email, phone, message: msg });
   status.classList.add('show');
   status.style.color = result.sent ? 'var(--good)' : 'var(--slate)';
-  status.textContent = result.sent ? 'Message sent — we\'ll get back to you shortly.' : 'Saved locally. Email delivery isn\'t configured yet, so please also reach us on WhatsApp or email directly.';
+  status.textContent = result.sent
+    ? 'Message sent — we\'ll get back to you shortly.'
+    : 'Thanks for reaching out. If you don\'t hear back soon, please also reach us on WhatsApp or by email.';
   if(result.sent){ ['ctName','ctEmail','ctPhone','ctMsg'].forEach(id=>document.getElementById(id).value=''); }
 }
 
