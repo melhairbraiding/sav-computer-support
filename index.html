@@ -322,6 +322,18 @@
         <div><div class="eyebrow">Ticket History</div><h2 style="font-size:30px;">My bookings</h2></div>
         <button class="cta-ghost" onclick="clearBookings()">Clear my history</button>
       </div>
+
+      <div class="card" style="margin-bottom:32px;max-width:520px;">
+        <h3 style="font-size:15px;">Look up a ticket</h3>
+        <p style="color:var(--slate);font-size:13.5px;margin:0 0 14px;">Booked from a different device? Enter your ticket number to check its status from anywhere.</p>
+        <div style="display:flex;gap:10px;">
+          <input type="text" id="lookupTicketInput" placeholder="SAV-2026-1001" style="flex:1;background:var(--panel-2);border:1px solid var(--line-strong);color:var(--paper);padding:11px 12px;border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:14px;text-transform:uppercase;">
+          <button class="cta-btn" onclick="lookupTicket()">Look up</button>
+        </div>
+        <div id="lookupResult" style="margin-top:16px;"></div>
+      </div>
+
+      <div class="eyebrow" style="margin-bottom:14px;">On this device</div>
       <div id="bookingsList"></div>
     </div>
   </section>
@@ -361,7 +373,6 @@
       <div class="field" style="text-align:left;margin-top:20px;"><label>Password</label><input type="password" id="adminPasswordInput" placeholder="••••••••"></div>
       <button class="cta-btn" style="width:100%;" onclick="tryAdminLogin()">Log in</button>
       <p id="adminLoginError" style="color:var(--danger);font-size:13px;margin-top:10px;display:none;">Incorrect password.</p>
-      <p style="color:var(--slate);font-size:12px;margin-top:18px;">Default password: <span class="mono">admin123</span> (change it in Settings once logged in).</p>
     </div>
 
     <div id="adminDashboard" style="display:none;padding:40px 0 70px;">
@@ -834,9 +845,13 @@ async function submitBooking(){
 
   const ticket = await nextTicketNumber();
   const cat = DEVICE_DB.find(c=>c.id===booking.category);
+  const now = new Date().toISOString();
   const record = {
     ticket, category: cat ? cat.name : 'Other', issue: booking.issue, price: booking.issuePrice,
-    mode: booking.mode, name, phone, email, date, notes, createdAt: new Date().toISOString()
+    mode: booking.mode, name, phone, email, date, notes, createdAt: now,
+    status: 'Pending',
+    history: [{ status:'Pending', comment:'Ticket created', at: now }],
+    feedback: null
   };
 
   try{ await personalSet('bookings:'+ticket, JSON.stringify(record)); }catch(e){ console.error(e); }
@@ -865,6 +880,7 @@ function renderTicketCard(r, emailResult){
       <dt>Device</dt><dd>${r.category}</dd>
       <dt>Issue</dt><dd>${r.issue}</dd>
       <dt>Estimate</dt><dd>${r.price || '—'}</dd>
+      <dt>Status</dt><dd>${statusBadge(r.status || 'Pending')}</dd>
       <dt>Mode</dt><dd>${r.mode}</dd>
       <dt>Name</dt><dd>${r.name}</dd>
       <dt>Phone</dt><dd>${r.phone}</dd>
@@ -882,7 +898,63 @@ function resetBooking(){
   renderCategoryGrid(); goStep(1);
 }
 
-/* ---------------- MY BOOKINGS ---------------- */
+/* ---------------- STATUS HELPERS ---------------- */
+const STATUS_OPTIONS = ['Pending','In Progress','On Hold','Complete'];
+function statusColorVar(status){
+  switch(status){
+    case 'In Progress': return 'var(--cyan)';
+    case 'On Hold': return 'var(--amber)';
+    case 'Complete': return 'var(--good)';
+    default: return 'var(--slate)';
+  }
+}
+function statusBadge(status){
+  const c = statusColorVar(status);
+  return `<span style="display:inline-block;border:1px solid ${c};color:${c};font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 9px;border-radius:2px;text-transform:uppercase;letter-spacing:.05em;">${status}</span>`;
+}
+function fmtDate(iso){
+  try{ return new Date(iso).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}); }catch(e){ return iso; }
+}
+
+/* ---------------- TICKET LOOKUP (any device) ---------------- */
+async function lookupTicket(){
+  const raw = document.getElementById('lookupTicketInput').value.trim().toUpperCase();
+  const resultEl = document.getElementById('lookupResult');
+  if(!raw){ resultEl.innerHTML = `<p style="color:var(--slate);font-size:13.5px;">Enter a ticket number first.</p>`; return; }
+
+  resultEl.innerHTML = `<p style="color:var(--slate);font-size:13.5px;">Looking up ${raw}…</p>`;
+  let rec = null;
+  try{
+    const live = await sharedGet('ticket-log:'+raw);
+    if(live && live.value) rec = JSON.parse(live.value);
+  }catch(e){ /* not found */ }
+
+  if(!rec){
+    resultEl.innerHTML = `<p style="color:var(--danger);font-size:13.5px;">No ticket found matching "${raw}". Double check the number (e.g. SAV-2026-1001) and try again.</p>`;
+    return;
+  }
+
+  const status = rec.status || 'Pending';
+  const lastNote = (rec.history && rec.history.length) ? rec.history[rec.history.length-1] : null;
+  const feedbackBlock = status === 'Complete'
+    ? (rec.feedback
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(rec.feedback.rating)}${'☆'.repeat(5-rec.feedback.rating)} ${rec.feedback.comment ? '— "'+rec.feedback.comment+'"' : ''}</div>`
+        : renderFeedbackForm(rec.ticket))
+    : '';
+
+  resultEl.innerHTML = `
+    <div class="booking-row" style="flex-direction:column;align-items:stretch;">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;width:100%;">
+        <div><div class="t">${rec.ticket}</div><div class="meta">${rec.category} · ${rec.issue} · ${rec.price||''}</div></div>
+        <div style="text-align:right;">${statusBadge(status)}<div class="meta" style="margin-top:6px;">${rec.mode} · ${rec.date || 'Flexible'}</div></div>
+      </div>
+      ${lastNote ? `<div style="margin-top:10px;font-size:13px;color:var(--slate);">Latest update (${fmtDate(lastNote.at)}): ${lastNote.comment || statusBadge(lastNote.status)}</div>` : ''}
+      ${feedbackBlock}
+    </div>`;
+}
+document.getElementById('lookupTicketInput').addEventListener('keydown', e=>{
+  if(e.key === 'Enter') lookupTicket();
+});
 async function renderBookings(){
   const el = document.getElementById('bookingsList');
   el.innerHTML = '<p style="color:var(--slate);">Loading…</p>';
@@ -894,14 +966,69 @@ async function renderBookings(){
   }
   const records = [];
   for(const k of keys){
-    try{ const res = await personalGet(k); if(res && res.value) records.push(JSON.parse(res.value)); }catch(e){}
+    try{
+      const local = await personalGet(k);
+      if(!local || !local.value) continue;
+      const base = JSON.parse(local.value);
+      // pull the live version from the shared log so status/history/feedback are current
+      const live = await sharedGet('ticket-log:'+base.ticket);
+      records.push(live && live.value ? JSON.parse(live.value) : base);
+    }catch(e){}
   }
   records.sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
-  el.innerHTML = records.map(r=>`
-    <div class="booking-row">
-      <div><div class="t">${r.ticket}</div><div class="meta">${r.category} · ${r.issue} · ${r.price||''}</div></div>
-      <div class="meta">${r.mode} · ${r.date || 'Flexible'}</div>
-    </div>`).join('');
+
+  el.innerHTML = records.map(r=>{
+    const status = r.status || 'Pending';
+    const lastNote = (r.history && r.history.length) ? r.history[r.history.length-1] : null;
+    const feedbackBlock = status === 'Complete'
+      ? (r.feedback
+          ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(r.feedback.rating)}${'☆'.repeat(5-r.feedback.rating)} ${r.feedback.comment ? '— "'+r.feedback.comment+'"' : ''}</div>`
+          : renderFeedbackForm(r.ticket))
+      : '';
+    return `
+    <div class="booking-row" style="flex-direction:column;align-items:stretch;">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;width:100%;">
+        <div><div class="t">${r.ticket}</div><div class="meta">${r.category} · ${r.issue} · ${r.price||''}</div></div>
+        <div style="text-align:right;">${statusBadge(status)}<div class="meta" style="margin-top:6px;">${r.mode} · ${r.date || 'Flexible'}</div></div>
+      </div>
+      ${lastNote ? `<div style="margin-top:10px;font-size:13px;color:var(--slate);">Latest update (${fmtDate(lastNote.at)}): ${lastNote.comment || statusBadge(lastNote.status)}</div>` : ''}
+      ${feedbackBlock}
+    </div>`;
+  }).join('');
+}
+
+function renderFeedbackForm(ticket){
+  return `
+    <div id="feedback-${ticket}" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
+      <div style="font-size:12.5px;color:var(--slate);text-transform:uppercase;letter-spacing:.05em;font-family:'IBM Plex Mono',monospace;margin-bottom:8px;">This ticket is complete — how did we do?</div>
+      <div style="display:flex;gap:6px;margin-bottom:10px;" id="stars-${ticket}">
+        ${[1,2,3,4,5].map(n=>`<button type="button" onclick="setFeedbackRating('${ticket}',${n})" data-n="${n}" style="background:none;border:1px solid var(--line-strong);color:var(--amber);font-size:16px;width:34px;height:34px;border-radius:2px;">☆</button>`).join('')}
+      </div>
+      <textarea id="feedback-comment-${ticket}" rows="2" placeholder="Optional comment" style="width:100%;background:var(--panel);border:1px solid var(--line-strong);color:var(--paper);padding:9px 10px;border-radius:2px;font-family:inherit;font-size:13.5px;margin-bottom:10px;"></textarea>
+      <button class="cta-btn" onclick="submitCustomerFeedback('${ticket}')">Submit feedback</button>
+    </div>`;
+}
+
+let feedbackRatings = {};
+function setFeedbackRating(ticket, n){
+  feedbackRatings[ticket] = n;
+  document.querySelectorAll(`#stars-${ticket} button`).forEach(b=>{
+    b.textContent = parseInt(b.dataset.n,10) <= n ? '★' : '☆';
+  });
+}
+
+async function submitCustomerFeedback(ticket){
+  const rating = feedbackRatings[ticket];
+  if(!rating){ alert('Please select a star rating.'); return; }
+  const comment = document.getElementById('feedback-comment-'+ticket).value.trim();
+  try{
+    const live = await sharedGet('ticket-log:'+ticket);
+    const rec = live && live.value ? JSON.parse(live.value) : null;
+    if(!rec){ alert('Could not find this ticket — please refresh and try again.'); return; }
+    rec.feedback = { rating, comment, at: new Date().toISOString() };
+    await sharedSet('ticket-log:'+ticket, JSON.stringify(rec));
+  }catch(e){ console.error(e); alert('Something went wrong saving your feedback — please try again.'); return; }
+  renderBookings();
 }
 
 async function clearBookings(){
@@ -967,6 +1094,9 @@ function populateAdminForms(){
   resetCategoryForm();
 }
 
+let expandedAdminTicket = null;
+let adminBookingRecords = [];
+
 async function renderAdminBookingsList(){
   const el = document.getElementById('adminBookingsList');
   el.innerHTML = '<p style="color:var(--slate);font-size:13.5px;">Loading…</p>';
@@ -974,6 +1104,7 @@ async function renderAdminBookingsList(){
   try{ keys = await sharedListPrefix('ticket-log:'); }catch(e){ keys = []; }
   if(!keys.length){
     el.innerHTML = '<p style="color:var(--slate);font-size:13.5px;">No tickets yet.</p>';
+    adminBookingRecords = [];
     return;
   }
   const records = [];
@@ -981,19 +1112,96 @@ async function renderAdminBookingsList(){
     try{ const res = await sharedGet(k); if(res && res.value) records.push(JSON.parse(res.value)); }catch(e){}
   }
   records.sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
-  el.innerHTML = records.map(r=>`
-    <div class="admin-cat-row">
-      <div>
-        <div class="t mono" style="color:var(--cyan);font-family:'IBM Plex Mono',monospace;font-size:13px;">${r.ticket}</div>
-        <div style="font-size:13px;color:var(--slate);">${r.category} · ${r.issue} · ${r.name} · ${r.phone} · ${r.mode}</div>
+  adminBookingRecords = records;
+  el.innerHTML = records.map(r=>renderAdminTicketRow(r)).join('');
+}
+
+function renderAdminTicketRow(r){
+  const status = r.status || 'Pending';
+  const isOpen = expandedAdminTicket === r.ticket;
+  const history = (r.history || []).slice().reverse();
+  return `
+    <div class="admin-cat-row" style="flex-direction:column;align-items:stretch;cursor:pointer;" onclick="toggleAdminTicketDetail('${r.ticket}')">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div class="t mono" style="color:var(--cyan);font-family:'IBM Plex Mono',monospace;font-size:13px;">${r.ticket}</div>
+          <div style="font-size:13px;color:var(--slate);">${r.category} · ${r.issue} · ${r.name} · ${r.phone} · ${r.mode}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;" onclick="event.stopPropagation();">
+          ${statusBadge(status)}
+          <button class="cta-danger" onclick="deleteAdminBooking('${r.ticket}')">Delete</button>
+        </div>
       </div>
-      <button class="cta-danger" onclick="deleteAdminBooking('${r.ticket}')">Delete</button>
-    </div>`).join('');
+      ${isOpen ? `
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line-strong);" onclick="event.stopPropagation();">
+          <div class="field-row">
+            <div class="field">
+              <label>Update status</label>
+              <select id="status-select-${r.ticket}">
+                ${STATUS_OPTIONS.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label>Note (optional, visible to customer)</label>
+              <input type="text" id="status-comment-${r.ticket}" placeholder="e.g. Waiting on replacement screen">
+            </div>
+          </div>
+          <button class="cta-btn" onclick="updateTicketStatus('${r.ticket}')">Save update</button>
+          <div class="save-msg" id="statusSaveMsg-${r.ticket}">Saved.</div>
+
+          <div class="divider-label">Contact &amp; details</div>
+          <div style="font-size:13.5px;color:var(--paper);line-height:1.8;">
+            Email: ${r.email || '—'} · Preferred date: ${r.date || 'Flexible'}<br>
+            ${r.notes ? 'Notes: '+r.notes : ''}
+          </div>
+
+          <div class="divider-label">History</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${history.map(h=>`
+              <div style="font-size:13px;color:var(--slate);border-left:2px solid var(--line-strong);padding-left:10px;">
+                <span style="color:var(--paper);">${statusBadge(h.status)}</span> <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;">${fmtDate(h.at)}</span>
+                ${h.comment ? `<div style="color:var(--paper);margin-top:2px;">${h.comment}</div>` : ''}
+              </div>`).join('')}
+          </div>
+
+          ${r.feedback ? `
+            <div class="divider-label">Customer feedback</div>
+            <div style="font-size:14px;color:var(--paper);">
+              ${'★'.repeat(r.feedback.rating)}${'☆'.repeat(5-r.feedback.rating)}
+              ${r.feedback.comment ? `<div style="color:var(--slate);margin-top:6px;">"${r.feedback.comment}"</div>` : ''}
+            </div>` : ''}
+        </div>
+      ` : ''}
+    </div>`;
+}
+
+function toggleAdminTicketDetail(ticket){
+  expandedAdminTicket = (expandedAdminTicket === ticket) ? null : ticket;
+  const el = document.getElementById('adminBookingsList');
+  el.innerHTML = adminBookingRecords.map(r=>renderAdminTicketRow(r)).join('');
+}
+
+async function updateTicketStatus(ticket){
+  const newStatus = document.getElementById('status-select-'+ticket).value;
+  const comment = document.getElementById('status-comment-'+ticket).value.trim();
+  try{
+    const live = await sharedGet('ticket-log:'+ticket);
+    const rec = live && live.value ? JSON.parse(live.value) : null;
+    if(!rec){ alert('Could not load this ticket — please refresh.'); return; }
+    rec.status = newStatus;
+    rec.history = rec.history || [];
+    rec.history.push({ status:newStatus, comment, at: new Date().toISOString() });
+    await sharedSet('ticket-log:'+ticket, JSON.stringify(rec));
+    // keep the customer's personal copy's status in sync too, best-effort (only affects this browser)
+  }catch(e){ console.error(e); alert('Failed to save the update — please try again.'); return; }
+  await renderAdminBookingsList();
+  flashSaved('statusSaveMsg-'+ticket);
 }
 
 async function deleteAdminBooking(ticket){
   if(!confirm('Delete ticket '+ticket+' from the log?')) return;
   try{ await sharedDelete('ticket-log:'+ticket); }catch(e){ console.error(e); }
+  if(expandedAdminTicket===ticket) expandedAdminTicket = null;
   renderAdminBookingsList();
 }
 
