@@ -484,6 +484,12 @@
         <button class="cta-btn" onclick="saveEmailjs()">Save EmailJS settings</button>
         <div class="save-msg" id="emailjsSaveMsg">Saved.</div>
 
+        <div class="divider-label">Google review link</div>
+        <p style="color:var(--slate);font-size:13.5px;max-width:520px;">Shown to customers on completed tickets and in the site footer. This just links out to your real Google review page — customers still submit the review directly through Google, not through this site.</p>
+        <div class="field" style="max-width:520px;"><label>Google review URL</label><input id="cfgGoogleReview" type="text" placeholder="https://g.page/r/xxxxxxxx/review"></div>
+        <button class="cta-btn" onclick="saveGoogleReview()">Save review link</button>
+        <div class="save-msg" id="googleReviewSaveMsg">Saved.</div>
+
         <div class="divider-label">Admin password</div>
         <p style="color:var(--slate);font-size:13.5px;max-width:520px;">
           For security, the admin password no longer lives in this panel or in the site's database — it's set as the
@@ -504,6 +510,7 @@
     <div>© <span id="year"></span> <span id="footerBrandName">Sav Computer Support</span> · Upper Marlboro, MD</div>
     <div style="display:flex;gap:16px;align-items:center;">
       <span>savcomputersupport.com · saviozaico@gmail.com</span>
+      <a href="#" id="footerReviewLink" target="_blank" rel="noopener" style="display:none;color:var(--amber);text-decoration:none;border-bottom:1px dotted var(--amber);">★ Leave a review</a>
       <a href="#" class="admin-link" onclick="showPage('admin');return false;">Admin</a>
     </div>
   </div>
@@ -603,7 +610,8 @@ const DEFAULT_SITE_CONFIG = {
   formspreeEndpoint: '',
   emailjsServiceId: '',
   emailjsTemplateId: '',
-  emailjsPublicKey: ''
+  emailjsPublicKey: '',
+  googleReviewUrl: 'https://g.page/r/CVBeIKCXTz44EBM/review'
 };
 
 /* ---------------- STORAGE ABSTRACTION ----------------
@@ -724,6 +732,15 @@ function renderBrand(){
     badge.innerHTML = SITE_CONFIG.logoSvg;
   } else {
     badge.innerHTML = DEFAULT_LOGO_SVG;
+  }
+  const reviewLink = document.getElementById('footerReviewLink');
+  if(reviewLink){
+    if(SITE_CONFIG.googleReviewUrl){
+      reviewLink.href = SITE_CONFIG.googleReviewUrl;
+      reviewLink.style.display = 'inline';
+    } else {
+      reviewLink.style.display = 'none';
+    }
   }
 }
 
@@ -1030,7 +1047,7 @@ async function lookupTicket(){
   const lastNote = (rec.history && rec.history.length) ? rec.history[rec.history.length-1] : null;
   const feedbackBlock = status === 'Complete'
     ? (rec.feedback
-        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(rec.feedback.rating)}${'☆'.repeat(5-rec.feedback.rating)} ${rec.feedback.comment ? '— "'+esc(rec.feedback.comment)+'"' : ''}</div>`
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(rec.feedback.rating)}${'☆'.repeat(5-rec.feedback.rating)} ${rec.feedback.comment ? '— "'+esc(rec.feedback.comment)+'"' : ''}${googleReviewLink()}</div>`
         : renderFeedbackForm(rec.ticket))
     : '';
 
@@ -1077,7 +1094,7 @@ async function renderBookings(){
     const lastNote = (r.history && r.history.length) ? r.history[r.history.length-1] : null;
     const feedbackBlock = status === 'Complete'
       ? (r.feedback
-          ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(r.feedback.rating)}${'☆'.repeat(5-r.feedback.rating)} ${r.feedback.comment ? '— "'+esc(r.feedback.comment)+'"' : ''}</div>`
+          ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(r.feedback.rating)}${'☆'.repeat(5-r.feedback.rating)} ${r.feedback.comment ? '— "'+esc(r.feedback.comment)+'"' : ''}${googleReviewLink()}</div>`
           : renderFeedbackForm(r.ticket))
       : '';
     return `
@@ -1101,7 +1118,15 @@ function renderFeedbackForm(ticket){
       </div>
       <textarea id="feedback-comment-${ticket}" rows="2" placeholder="Optional comment" style="width:100%;background:var(--panel);border:1px solid var(--line-strong);color:var(--paper);padding:9px 10px;border-radius:2px;font-family:inherit;font-size:13.5px;margin-bottom:10px;"></textarea>
       <button class="cta-btn" onclick="submitCustomerFeedback('${ticket}')">Submit feedback</button>
+      ${googleReviewLink()}
     </div>`;
+}
+
+function googleReviewLink(){
+  if(!SITE_CONFIG.googleReviewUrl) return '';
+  return `<div style="margin-top:14px;">
+    <a href="${esc(SITE_CONFIG.googleReviewUrl)}" target="_blank" rel="noopener" class="cta-ghost" style="display:inline-block;text-decoration:none;">★ Leave us a Google review ↗</a>
+  </div>`;
 }
 
 let feedbackRatings = {};
@@ -1206,6 +1231,7 @@ function populateAdminForms(){
   document.getElementById('cfgEmailjsService').value = SITE_CONFIG.emailjsServiceId;
   document.getElementById('cfgEmailjsTemplate').value = SITE_CONFIG.emailjsTemplateId;
   document.getElementById('cfgEmailjsKey').value = SITE_CONFIG.emailjsPublicKey;
+  document.getElementById('cfgGoogleReview').value = SITE_CONFIG.googleReviewUrl;
   toggleLogoFields();
   renderAdminCatList();
   renderAdminGalleryList();
@@ -1425,6 +1451,13 @@ async function saveEmailjs(){
   SITE_CONFIG.emailjsPublicKey = document.getElementById('cfgEmailjsKey').value.trim();
   await persistSiteConfig();
   flashSaved('emailjsSaveMsg');
+}
+
+async function saveGoogleReview(){
+  SITE_CONFIG.googleReviewUrl = document.getElementById('cfgGoogleReview').value.trim();
+  await persistSiteConfig();
+  renderBrand();
+  flashSaved('googleReviewSaveMsg');
 }
 
 
