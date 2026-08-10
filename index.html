@@ -482,12 +482,14 @@
         <div class="save-msg" id="emailjsSaveMsg">Saved.</div>
 
         <div class="divider-label">Admin password</div>
-        <div class="field-row" style="max-width:420px;">
-          <div class="field"><label>New password</label><input id="cfgNewPassword" type="password" placeholder="New password"></div>
-          <div class="field"><label>Confirm</label><input id="cfgNewPassword2" type="password" placeholder="Confirm password"></div>
-        </div>
-        <button class="cta-btn" onclick="changeAdminPassword()">Update password</button>
-        <div class="save-msg" id="passwordSaveMsg">Saved.</div>
+        <p style="color:var(--slate);font-size:13.5px;max-width:520px;">
+          For security, the admin password no longer lives in this panel or in the site's database — it's set as the
+          <span class="mono">ADMIN_PASSWORD</span> environment variable in Netlify (same place as <span class="mono">BLOBS_SITE_ID</span> and <span class="mono">BLOBS_API_TOKEN</span>).
+          This means it's never sent to or stored in your browser, and can't be read by inspecting the site's code.
+        </p>
+        <p style="color:var(--slate);font-size:13.5px;max-width:520px;">
+          To change it: Netlify dashboard → this site → Site settings → Environment variables → edit <span class="mono">ADMIN_PASSWORD</span> → trigger a redeploy for it to take effect.
+        </p>
       </div>
     </div>
   </section>
@@ -598,8 +600,7 @@ const DEFAULT_SITE_CONFIG = {
   formspreeEndpoint: '',
   emailjsServiceId: '',
   emailjsTemplateId: '',
-  emailjsPublicKey: '',
-  adminPassword: 'admin123'
+  emailjsPublicKey: ''
 };
 
 /* ---------------- STORAGE ABSTRACTION ----------------
@@ -611,11 +612,16 @@ const DEFAULT_SITE_CONFIG = {
    not the business's source of truth (Formspree email is). */
 const hasClaudeStorage = (typeof window !== 'undefined') && !!window.storage;
 const BLOB_API = '/.netlify/functions/data';
+let adminToken = sessionStorage.getItem('sav_admin_token') || null;
+
+function adminHeaders(){
+  return adminToken ? { 'x-admin-token': adminToken } : {};
+}
 
 async function sharedGet(key){
   if(hasClaudeStorage){ try{ return await window.storage.get(key, true); }catch(e){ return null; } }
   try{
-    const res = await fetch(`${BLOB_API}?action=get&key=${encodeURIComponent(key)}`);
+    const res = await fetch(`${BLOB_API}?action=get&key=${encodeURIComponent(key)}`, { headers: adminHeaders() });
     if(!res.ok) return null;
     const data = await res.json();
     return (data && data.value!=null) ? { key, value:data.value, shared:true } : null;
@@ -624,14 +630,14 @@ async function sharedGet(key){
 async function sharedSet(key, value){
   if(hasClaudeStorage){ try{ return await window.storage.set(key, value, true); }catch(e){ return null; } }
   try{
-    const res = await fetch(BLOB_API, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'set', key, value}) });
+    const res = await fetch(BLOB_API, { method:'POST', headers:{'Content-Type':'application/json', ...adminHeaders()}, body: JSON.stringify({action:'set', key, value}) });
     return res.ok ? { key, value, shared:true } : null;
   }catch(e){ return null; }
 }
 async function sharedDelete(key){
   if(hasClaudeStorage){ try{ return await window.storage.delete(key, true); }catch(e){ return null; } }
   try{
-    const res = await fetch(BLOB_API, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'delete', key}) });
+    const res = await fetch(BLOB_API, { method:'POST', headers:{'Content-Type':'application/json', ...adminHeaders()}, body: JSON.stringify({action:'delete', key}) });
     return res.ok ? { key, deleted:true } : null;
   }catch(e){ return null; }
 }
@@ -640,7 +646,7 @@ async function sharedListPrefix(prefix){
     try{ const res = await window.storage.list(prefix, true); return (res && res.keys) ? res.keys : []; }catch(e){ return []; }
   }
   try{
-    const res = await fetch(`${BLOB_API}?action=list&prefix=${encodeURIComponent(prefix)}`);
+    const res = await fetch(`${BLOB_API}?action=list&prefix=${encodeURIComponent(prefix)}`, { headers: adminHeaders() });
     if(!res.ok) return [];
     const data = await res.json();
     return data.keys || [];
@@ -672,7 +678,7 @@ async function personalListPrefix(prefix){
 let DEVICE_DB = JSON.parse(JSON.stringify(DEFAULT_DEVICE_DB));
 let SITE_CONFIG = JSON.parse(JSON.stringify(DEFAULT_SITE_CONFIG));
 let GALLERY = [];
-let isAdmin = false;
+let isAdmin = !!adminToken;
 
 /* ---------------- STORAGE LOAD/SAVE ---------------- */
 async function loadAll(){
@@ -940,8 +946,8 @@ function renderTicketCard(r, emailResult){
       <dt>Estimate</dt><dd>${r.price || '—'}</dd>
       <dt>Status</dt><dd>${statusBadge(r.status || 'Pending')}</dd>
       <dt>Mode</dt><dd>${r.mode}</dd>
-      <dt>Name</dt><dd>${r.name}</dd>
-      <dt>Phone</dt><dd>${r.phone}</dd>
+      <dt>Name</dt><dd>${esc(r.name)}</dd>
+      <dt>Phone</dt><dd>${esc(r.phone)}</dd>
       <dt>Email</dt><dd>${r.email || '—'}</dd>
       <dt>Preferred date</dt><dd>${r.date || 'Flexible'}</dd>
       <dt>Notes</dt><dd>${r.notes || '—'}</dd>
@@ -978,6 +984,16 @@ function statusBadge(status){
 function fmtDate(iso){
   try{ return new Date(iso).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}); }catch(e){ return iso; }
 }
+// Escapes any customer-typed text before it's inserted into the page as HTML.
+// Without this, a booking's "issue" field (or name/notes/feedback) could contain
+// a <script> tag that would run in the browser of anyone who later views that
+// ticket — including you, in the admin panel, or another visitor via ticket lookup.
+function esc(str){
+  if(str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 
 /* ---------------- TICKET LOOKUP (any device) ---------------- */
 async function lookupTicket(){
@@ -1001,17 +1017,17 @@ async function lookupTicket(){
   const lastNote = (rec.history && rec.history.length) ? rec.history[rec.history.length-1] : null;
   const feedbackBlock = status === 'Complete'
     ? (rec.feedback
-        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(rec.feedback.rating)}${'☆'.repeat(5-rec.feedback.rating)} ${rec.feedback.comment ? '— "'+rec.feedback.comment+'"' : ''}</div>`
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(rec.feedback.rating)}${'☆'.repeat(5-rec.feedback.rating)} ${rec.feedback.comment ? '— "'+esc(rec.feedback.comment)+'"' : ''}</div>`
         : renderFeedbackForm(rec.ticket))
     : '';
 
   resultEl.innerHTML = `
     <div class="booking-row" style="flex-direction:column;align-items:stretch;">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;width:100%;">
-        <div><div class="t">${rec.ticket}</div><div class="meta">${rec.category} · ${rec.issue} · ${rec.price||''}</div></div>
+        <div><div class="t">${rec.ticket}</div><div class="meta">${esc(rec.category)} · ${esc(rec.issue)} · ${esc(rec.price)||''}</div></div>
         <div style="text-align:right;">${statusBadge(status)}<div class="meta" style="margin-top:6px;">${rec.mode} · ${rec.date || 'Flexible'}</div></div>
       </div>
-      ${lastNote ? `<div style="margin-top:10px;font-size:13px;color:var(--slate);">Latest update (${fmtDate(lastNote.at)}): ${lastNote.comment || statusBadge(lastNote.status)}</div>` : ''}
+      ${lastNote ? `<div style="margin-top:10px;font-size:13px;color:var(--slate);">Latest update (${fmtDate(lastNote.at)}): ${lastNote.comment ? esc(lastNote.comment) : statusBadge(lastNote.status)}</div>` : ''}
       ${feedbackBlock}
     </div>`;
 }
@@ -1045,16 +1061,16 @@ async function renderBookings(){
     const lastNote = (r.history && r.history.length) ? r.history[r.history.length-1] : null;
     const feedbackBlock = status === 'Complete'
       ? (r.feedback
-          ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(r.feedback.rating)}${'☆'.repeat(5-r.feedback.rating)} ${r.feedback.comment ? '— "'+r.feedback.comment+'"' : ''}</div>`
+          ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--slate);">Your feedback: ${'★'.repeat(r.feedback.rating)}${'☆'.repeat(5-r.feedback.rating)} ${r.feedback.comment ? '— "'+esc(r.feedback.comment)+'"' : ''}</div>`
           : renderFeedbackForm(r.ticket))
       : '';
     return `
     <div class="booking-row" style="flex-direction:column;align-items:stretch;">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;width:100%;">
-        <div><div class="t">${r.ticket}</div><div class="meta">${r.category} · ${r.issue} · ${r.price||''}</div></div>
+        <div><div class="t">${r.ticket}</div><div class="meta">${esc(r.category)} · ${esc(r.issue)} · ${esc(r.price)||''}</div></div>
         <div style="text-align:right;">${statusBadge(status)}<div class="meta" style="margin-top:6px;">${r.mode} · ${r.date || 'Flexible'}</div></div>
       </div>
-      ${lastNote ? `<div style="margin-top:10px;font-size:13px;color:var(--slate);">Latest update (${fmtDate(lastNote.at)}): ${lastNote.comment || statusBadge(lastNote.status)}</div>` : ''}
+      ${lastNote ? `<div style="margin-top:10px;font-size:13px;color:var(--slate);">Latest update (${fmtDate(lastNote.at)}): ${lastNote.comment ? esc(lastNote.comment) : statusBadge(lastNote.status)}</div>` : ''}
       ${feedbackBlock}
     </div>`;
   }).join('');
@@ -1125,18 +1141,37 @@ function showAdminEntry(){
   if(isAdmin) populateAdminForms();
 }
 
-function tryAdminLogin(){
+async function tryAdminLogin(){
   const val = document.getElementById('adminPasswordInput').value;
-  if(val === SITE_CONFIG.adminPassword){
-    isAdmin = true;
-    document.getElementById('adminLoginError').style.display = 'none';
-    document.getElementById('adminPasswordInput').value = '';
-    showAdminEntry();
-  } else {
+  const loginBtn = document.querySelector('#adminLoginView .cta-btn');
+  if(loginBtn){ loginBtn.disabled = true; loginBtn.textContent = 'Checking…'; }
+  try{
+    const res = await fetch('/.netlify/functions/data', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'login', password: val })
+    });
+    if(res.ok){
+      adminToken = val;
+      sessionStorage.setItem('sav_admin_token', adminToken);
+      isAdmin = true;
+      document.getElementById('adminLoginError').style.display = 'none';
+      document.getElementById('adminPasswordInput').value = '';
+      showAdminEntry();
+    } else {
+      document.getElementById('adminLoginError').style.display = 'block';
+    }
+  }catch(e){
+    document.getElementById('adminLoginError').textContent = 'Could not reach the server — please try again.';
     document.getElementById('adminLoginError').style.display = 'block';
   }
+  if(loginBtn){ loginBtn.disabled = false; loginBtn.textContent = 'Log in'; }
 }
-function adminLogout(){ isAdmin = false; showAdminEntry(); }
+function adminLogout(){
+  isAdmin = false;
+  adminToken = null;
+  sessionStorage.removeItem('sav_admin_token');
+  showAdminEntry();
+}
 
 function showAdminTab(tab){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
@@ -1213,7 +1248,7 @@ function renderAdminTicketRow(r){
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <div>
           <div class="t mono" style="color:var(--cyan);font-family:'IBM Plex Mono',monospace;font-size:13px;">${r.ticket}</div>
-          <div style="font-size:13px;color:var(--slate);">${r.category} · ${r.issue} · ${r.name} · ${r.phone} · ${r.mode}</div>
+          <div style="font-size:13px;color:var(--slate);">${esc(r.category)} · ${esc(r.issue)} · ${esc(r.name)} · ${esc(r.phone)} · ${esc(r.mode)}</div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;" onclick="event.stopPropagation();">
           ${statusBadge(status)}
@@ -1247,7 +1282,7 @@ function renderAdminTicketRow(r){
           <div class="divider-label">Contact &amp; details</div>
           <div style="font-size:13.5px;color:var(--paper);line-height:1.8;">
             Email: ${r.email || '—'} · Preferred date: ${r.date || 'Flexible'}<br>
-            ${r.notes ? 'Notes: '+r.notes : ''}
+            ${r.notes ? 'Notes: '+esc(r.notes) : ''}
           </div>
 
           <div class="divider-label">History</div>
@@ -1255,7 +1290,7 @@ function renderAdminTicketRow(r){
             ${history.map(h=>`
               <div style="font-size:13px;color:var(--slate);border-left:2px solid var(--line-strong);padding-left:10px;">
                 <span style="color:var(--paper);">${statusBadge(h.status)}</span> <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;">${fmtDate(h.at)}</span>
-                ${h.comment ? `<div style="color:var(--paper);margin-top:2px;">${h.comment}</div>` : ''}
+                ${h.comment ? `<div style="color:var(--paper);margin-top:2px;">${esc(h.comment)}</div>` : ''}
               </div>`).join('')}
           </div>
 
@@ -1263,7 +1298,7 @@ function renderAdminTicketRow(r){
             <div class="divider-label">Customer feedback</div>
             <div style="font-size:14px;color:var(--paper);">
               ${'★'.repeat(r.feedback.rating)}${'☆'.repeat(5-r.feedback.rating)}
-              ${r.feedback.comment ? `<div style="color:var(--slate);margin-top:6px;">"${r.feedback.comment}"</div>` : ''}
+              ${r.feedback.comment ? `<div style="color:var(--slate);margin-top:6px;">"${esc(r.feedback.comment)}"</div>` : ''}
             </div>` : ''}
         </div>
       ` : ''}
@@ -1374,15 +1409,7 @@ async function saveEmailjs(){
   flashSaved('emailjsSaveMsg');
 }
 
-async function changeAdminPassword(){
-  const p1 = document.getElementById('cfgNewPassword').value;
-  const p2 = document.getElementById('cfgNewPassword2').value;
-  if(!p1 || p1 !== p2){ alert('Passwords must match and not be empty.'); return; }
-  SITE_CONFIG.adminPassword = p1;
-  await persistSiteConfig();
-  document.getElementById('cfgNewPassword').value=''; document.getElementById('cfgNewPassword2').value='';
-  flashSaved('passwordSaveMsg');
-}
+
 
 function flashSaved(id){
   const el = document.getElementById(id);
